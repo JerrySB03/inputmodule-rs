@@ -23,18 +23,20 @@ enum SleepMode {
     Instant,
     /// Fade brightness out and in slowly when sleeping/waking-up
     Fading,
-    // Display "SLEEP" when sleeping, instead of turning LEDs off
+    /// Display "SLEEP" when sleeping, instead of turning LEDs off
     Debug,
+    /// Drop the current values to zero when sleeping and to actual value when waking up
+    Dropping,
 }
 
 /// Static configuration whether sleep shohld instantly turn all LEDs on/off or
 /// slowly fade themm on/off
-const SLEEP_MODE: SleepMode = SleepMode::Fading;
+const SLEEP_MODE: SleepMode = SleepMode::Dropping;
 
 const STARTUP_ANIMATION: bool = true;
 
-/// Go to sleep after 60s awake
-const SLEEP_TIMEOUT: u64 = 60_000_000;
+/// Go to sleep after 2,5s awake
+const SLEEP_TIMEOUT: u64 = 2_500_000;
 
 /// List maximum current as 500mA in the USB descriptor
 const MAX_CURRENT: usize = 500;
@@ -463,14 +465,6 @@ fn main() -> ! {
                                         SleepState::Sleeping((grid.clone(), new_brightness));
                                 }
                             }
-                            handle_sleep(
-                                sleep_reason,
-                                &mut state,
-                                &mut matrix,
-                                &mut delay,
-                                &mut led_enable,
-                            );
-
                             // If there's a very early command, cancel the startup animation
                             state.upcoming_frames = None;
 
@@ -483,6 +477,14 @@ fn main() -> ! {
                             {
                                 let _ = serial.write(&response);
                             };
+                            handle_sleep(
+                                sleep_reason,
+                                &mut state,
+                                &mut matrix,
+                                &mut delay,
+                                &mut led_enable,
+                            );
+
                             // Must write AFTER writing response, otherwise the
                             // client interprets this debug message as the response
                             let mut text: String<64> = String::new();
@@ -616,24 +618,35 @@ fn handle_sleep(
         (SleepState::Awake, Some(sleep_reason)) => {
             state.sleeping = SleepState::Sleeping((state.grid.clone(), state.brightness));
             // Slowly decrease brightness
-            if dyn_sleep_mode(state) == SleepMode::Fading {
-                let mut brightness = state.brightness;
-                loop {
-                    delay.delay_ms(100);
-                    brightness = if brightness <= 5 { 0 } else { brightness - 5 };
-                    set_brightness(state, brightness, matrix);
-                    if brightness == 0 {
-                        break;
+            match dyn_sleep_mode(state) {
+                SleepMode::Fading => {
+                    let mut brightness = state.brightness;
+                    loop {
+                        delay.delay_ms(100);
+                        brightness = if brightness <= 5 { 0 } else { brightness - 5 };
+                        set_brightness(state, brightness, matrix);
+                        if brightness == 0 {
+                            break;
+                        }
                     }
                 }
-            }
-
-            if debug_mode(state) {
-                state.grid = display_sleep_reason(sleep_reason);
-                fill_grid_pixels(state, matrix);
-            } else {
+                SleepMode::Debug => {
+                    state.grid = display_sleep_reason(sleep_reason);
+                    fill_grid_pixels(state, matrix)
+                }
+                SleepMode::Dropping => {
+                    let grid = state.grid.clone();
+                    for y in 0..HEIGHT {
+                        for x in 0..WIDTH {
+                            state.grid.0[x][y] = 0x00;
+                        }
+                        fill_grid_pixels(state, matrix)
+                    }
+                    led_enable.set_low().unwrap();
+                    state.grid = grid;
+                }
                 // Turn LED controller off to save power
-                led_enable.set_low().unwrap();
+                _ => led_enable.set_low().unwrap(),
             }
 
             // TODO: Set up SLEEP# pin as interrupt and wfi
@@ -648,32 +661,64 @@ fn handle_sleep(
             }
         }
         // Sleeping and need to wake up
-        (SleepState::Sleeping((old_grid, old_brightness)), None) => {
+        (SleepState::Sleeping((_old_grid, old_brightness)), None) => {
             // Restore back grid before sleeping
             state.sleeping = SleepState::Awake;
-            state.grid = old_grid;
             fill_grid_pixels(state, matrix);
 
-            // Power LED controller back on
-            if !debug_mode(state) {
+            if old_brightness != state.brightness {
                 led_enable.set_high().unwrap();
+                state.grid = percentage(100);
+                fill_grid_pixels(state, matrix);
+                return;
             }
-
-            // Slowly increase brightness
-            if dyn_sleep_mode(state) == SleepMode::Fading {
-                let mut brightness = 0;
-                loop {
-                    delay.delay_ms(100);
-                    brightness = if brightness >= old_brightness - 5 {
-                        old_brightness
-                    } else {
-                        brightness + 5
-                    };
-                    set_brightness(state, brightness, matrix);
-                    if brightness == old_brightness {
-                        break;
+            match dyn_sleep_mode(state) {
+                SleepMode::Fading => {
+                    let mut brightness = 0;
+                    led_enable.set_high().unwrap();
+                    loop {
+                        delay.delay_ms(100);
+                        brightness = if brightness >= old_brightness - 5 {
+                            old_brightness
+                        } else {
+                            brightness + 5
+                        };
+                        set_brightness(state, brightness, matrix);
+                        if brightness == old_brightness {
+                            break;
+                        }
                     }
                 }
+                SleepMode::Dropping => {
+                    let grid = state.grid.clone();
+                    state.grid = Grid::default();
+                    fill_grid_pixels(state, matrix);
+                    led_enable.set_high().unwrap();
+
+                    for y in (0..HEIGHT).rev() {
+                        for x in 0..WIDTH {
+                            state.grid.0[x][y] = grid.0[x][y];
+                        }
+                        let mut empty = true;
+                        for y2 in y..HEIGHT {
+                            for x2 in 0..WIDTH {
+                                if grid.0[x2][y2] > 0 {
+                                    empty = false;
+                                    break;
+                                }
+                            }
+                            if !empty {
+                                break;
+                            }
+                        }
+                        if empty {
+                            break;
+                        }
+                        fill_grid_pixels(state, matrix);
+                    }
+                }
+                // Power LED controller back on
+                _ => led_enable.set_high().unwrap(),
             }
         }
     }

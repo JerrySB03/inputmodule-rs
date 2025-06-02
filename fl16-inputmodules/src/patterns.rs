@@ -46,8 +46,7 @@ pub fn draw(bytes: &[u8; DRAW_BYTES]) -> Grid {
 }
 
 pub fn draw_grey_col(grid: &mut Grid, col: u8, levels: &[u8; HEIGHT]) {
-    // TODO: I don't think I need the [..HEIGHT] slicing
-    grid.0[8 - col as usize][..HEIGHT].copy_from_slice(&levels[..HEIGHT]);
+    grid.0[8 - col as usize].copy_from_slice(levels);
 }
 
 pub fn display_sleep_reason(sleep_reason: SleepReason) -> Grid {
@@ -268,10 +267,15 @@ pub fn gradient() -> Grid {
 /// Fill a percentage of the rows from the bottom up
 pub fn percentage(percentage: u16) -> Grid {
     let mut grid = Grid::default();
-    let first_row = HEIGHT * (percentage as usize) / 100;
-    for y in (HEIGHT - first_row)..HEIGHT {
+    let max = HEIGHT * WIDTH * (100 - percentage)  as usize / 100; 
+    for y in 0..HEIGHT {
         for x in 0..WIDTH {
-            grid.0[x][y] = 0xFF;
+            if y * WIDTH + x < max {
+                grid.0[x][y] = 0x00;
+            }
+            else {
+                grid.0[x][y] = 0xFF;
+            }
         }
     }
     grid

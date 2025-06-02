@@ -28,3 +28,6 @@ _version.py
 build/
 dist/
 ledmatrix_control.spec
+
+# Nix
+result/
